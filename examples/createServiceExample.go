@@ -1,30 +1,44 @@
+
 package main
 
 import (
 	"fmt"
+	"github.com/david415/goControlTor"
 )
 
 func main() {
-	torControl := &TorControl{}
+	torControl := &goControlTor.TorControl{}
 
-	torControlNetwork := "tcp"
-	// your tor control port is usually 9051
-	torControlAddr := "127.0.0.1:9951"
-	// set this to your tor control port authentication password
-	torControlAuthPassword := "toositai8uRupohnugiCeekiex5phahx"
-	secretServiceDir := "/var/lib/tor-alpha/hiddenService"
+
+
+
+	// directory and parent directory must be owned by the tor user/group
+	// and have g+rx permissions
+	secretServiceDir := "/var/lib/tor-alpha-services/hiddenService01"
 	secretServicePort := map[int]string{80: "127.0.0.1:80"}
 
 	var err error = nil
-	err = torControl.Dial(torControlNetwork, torControlAddr)
+	//torControlNetwork := "tcp"
+	// your tor control port is usually 9051
+	//torControlAddr := "127.0.0.1:9951"
+	//err = torControl.Dial(torControlNetwork, torControlAddr)
+
+	err = torControl.Dial("unix","/var/lib/tor-alpha-control/control")
+	fmt.Print("dialed!\n")
 	if err != nil {
-		fmt.Print("connect fail\n")
+		fmt.Print("connect fail %s\n", err)
 		return
 	}
 
-	err = torControl.PasswordAuthenticate(torControlAuthPassword)
+	// set this to your tor control port authentication password
+	//torControlAuthPassword := "toositai8uRupohnugiCeekiex5phahx"
+	//err = torControl.PasswordAuthenticate(torControlAuthPassword)
+
+	// directory must be owned by the tor user/group
+	// and have g+rx permissions
+	err = torControl.SafeCookieAuthentication("/var/lib/tor-alpha-control/control_auth_cookie")
 	if err != nil {
-		fmt.Print("Tor control port password authentication fail\n")
+		fmt.Print("Tor control port safe cookie authentication fail\n")
 		return
 	}
 	fmt.Print("Tor control port password authentication successful.\n")
@@ -38,7 +52,7 @@ func main() {
 
 	// XXX
 	onion := ""
-	onion, err = ReadOnion(secretServiceDir)
+	onion, err = goControlTor.ReadOnion(secretServiceDir)
 	if err != nil {
 		fmt.Printf("ReadOnion error: %s\n", err)
 		return

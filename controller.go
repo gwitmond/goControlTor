@@ -4,6 +4,11 @@ import (
 	"bufio"
 	"fmt"
 	"io/ioutil"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
 	"net"
 	"net/textproto"
 	"path"
@@ -12,40 +17,156 @@ import (
 const (
 	cmdOK           = 250
 	cmdAuthenticate = "AUTHENTICATE"
+	cmdAuthChallenge = "AUTHCHALLENGE"
+//	authMethodCookie     = "COOKIE"
+//	authMethodNull       = "NULL"
+
+	respAuthChallenge = "AUTHCHALLENGE "
+
+	argServerHash = "SERVERHASH="
+	argServerNonce = "SERVERNONCE="
+
+	authMethodSafeCookie = "SAFECOOKIE"
+	authNonceLength   = 32
+
+	authServerHashKey = "Tor safe cookie authentication server-to-controller hash"
+	authClientHashKey = "Tor safe cookie authentication controller-to-server hash"
 )
 
 type TorControl struct {
-	netConn                net.Conn
+	controlConn            net.Conn
 	textprotoReader        *textproto.Reader
 	authenticationPassword string
 }
 
+// Dial handles unix domain sockets and tcp!
 func (t *TorControl) Dial(network, addr string) error {
 	var err error = nil
-	t.netConn, err = net.Dial(network, addr)
+	t.controlConn, err = net.Dial(network, addr)
 	if err != nil {
 		return err
 	}
-	reader := bufio.NewReader(t.netConn)
+	reader := bufio.NewReader(t.controlConn)
 	t.textprotoReader = textproto.NewReader(reader)
 	return nil
 }
 
-func (t *TorControl) SendCommand(command string) error {
-	_, err := t.netConn.Write([]byte(command))
+func (t *TorControl) SendCommand(command string) (int, string, error) {
+	var code int
+	var message string
+	var err error
+
+	_, err = t.controlConn.Write([]byte(command))
 	if err != nil {
-		return fmt.Errorf("writing to tor control port: %s", err)
+		return 0, "", fmt.Errorf("writing to tor control port: %s", err)
 	}
-	_, _, err = t.textprotoReader.ReadCodeLine(cmdOK)
+	code, message, err = t.textprotoReader.ReadCodeLine(cmdOK)
 	if err != nil {
-		return fmt.Errorf("reading tor control port command status: %s", err)
+		return code, message, fmt.Errorf("reading tor control port command status: %s", err)
 	}
+	return code, message, nil
+}
+
+func (t *TorControl) SafeCookieAuthentication(cookiePath string) error {
+
+	var code int
+	var message string
+
+	cookie, err := readAuthCookie(cookiePath)
+	if err != nil {
+		return err
+	}
+
+	cookie, err = t.authSafeCookie(cookie)
+	if err != nil {
+		return err
+	}
+	cookieStr := hex.EncodeToString(cookie)
+	authReq := fmt.Sprintf("%s %s\n", cmdAuthenticate, cookieStr)
+
+
+	code, message, err = t.SendCommand(authReq)
+	if err != nil {
+		return fmt.Errorf("Safe Cookie Authentication fail: %s %s %s", code, message, err)
+	}
+
 	return nil
+}
+
+func readAuthCookie(path string) ([]byte, error) {
+	// Read the cookie auth file.
+	cookie, err := ioutil.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading cookie auth file: %s", err)
+	}
+	return cookie, nil
+}
+
+func (t *TorControl) authSafeCookie(cookie []byte) ([]byte, error) {
+	var code int
+	var message string
+	var err error
+
+	clientNonce := make([]byte, authNonceLength)
+	if _, err := rand.Read(clientNonce); err != nil {
+		return nil, fmt.Errorf("generating AUTHCHALLENGE nonce: %s", err)
+	}
+	clientNonceStr := hex.EncodeToString(clientNonce)
+
+	// Send and process the AUTHCHALLENGE.
+	authChallengeReq := []byte(fmt.Sprintf("%s %s %s\n", cmdAuthChallenge, authMethodSafeCookie, clientNonceStr))
+	if _, err := t.controlConn.Write(authChallengeReq); err != nil {
+		return nil, fmt.Errorf("writing AUTHCHALLENGE request: %s", err)
+	}
+
+	code, message, err = t.textprotoReader.ReadCodeLine(cmdOK)
+	if err != nil {
+		return nil, fmt.Errorf("reading tor control port command status: %s %s %s", code, message, err)
+	}
+
+	lineStr := strings.TrimSpace(message)
+	respStr := strings.TrimPrefix(lineStr, respAuthChallenge)
+	if respStr == lineStr {
+		return nil, fmt.Errorf("parsing AUTHCHALLENGE response")
+	}
+	splitResp := strings.SplitN(respStr, " ", 2)
+	if len(splitResp) != 2 {
+		return nil, fmt.Errorf("parsing AUTHCHALLENGE response")
+	}
+	hashStr := strings.TrimPrefix(splitResp[0], argServerHash)
+	serverHash, err := hex.DecodeString(hashStr)
+	if err != nil {
+		return nil, fmt.Errorf("decoding AUTHCHALLENGE ServerHash: %s", err)
+	}
+	serverNonceStr := strings.TrimPrefix(splitResp[1], argServerNonce)
+	serverNonce, err := hex.DecodeString(serverNonceStr)
+	if err != nil {
+		return nil, fmt.Errorf("decoding AUTHCHALLENGE ServerNonce: %s", err)
+	}
+
+	// Validate the ServerHash.
+	m := hmac.New(sha256.New, []byte(authServerHashKey))
+	m.Write([]byte(cookie))
+	m.Write([]byte(clientNonce))
+	m.Write([]byte(serverNonce))
+	dervServerHash := m.Sum(nil)
+	if !hmac.Equal(serverHash, dervServerHash) {
+		return nil, fmt.Errorf("AUTHCHALLENGE ServerHash is invalid")
+	}
+
+	// Calculate the ClientHash.
+	m = hmac.New(sha256.New, []byte(authClientHashKey))
+	m.Write([]byte(cookie))
+	m.Write([]byte(clientNonce))
+	m.Write([]byte(serverNonce))
+
+	return m.Sum(nil), nil
 }
 
 func (t *TorControl) PasswordAuthenticate(password string) error {
 	authCmd := fmt.Sprintf("%s \"%s\"\n", cmdAuthenticate, password)
-	return t.SendCommand(authCmd)
+	_,_,err := t.SendCommand(authCmd)
+	return err
 }
 
 // Creates a Tor Hidden Service with the HiddenServiceDirGroupReadable option
@@ -58,12 +179,14 @@ func (t *TorControl) CreateHiddenService(serviceDir string, listenAddrs map[int]
 		createCmd += fmt.Sprintf(" hiddenserviceport=\"%d %s\"", virtPort, listenAddr)
 	}
 	createCmd += " HiddenServiceDirGroupReadable=1\n"
-	return t.SendCommand(createCmd)
+	_, _, err := t.SendCommand(createCmd)
+	return err
 }
 
 func (t *TorControl) DeleteHiddenService(serviceDir string) error {
 	var deleteCmd string = fmt.Sprintf("SETCONF hiddenservicedir=%s\n", serviceDir)
-	return t.SendCommand(deleteCmd)
+	_, _, err := t.SendCommand(deleteCmd)
+	return err
 }
 
 func ReadOnion(serviceDir string) (string, error) {
