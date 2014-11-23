@@ -1,4 +1,3 @@
-
 package main
 
 import (
@@ -8,9 +7,6 @@ import (
 
 func main() {
 	torControl := &goControlTor.TorControl{}
-
-
-
 
 	// directory and parent directory must be owned by the tor user/group
 	// and have g+rx permissions
@@ -23,7 +19,7 @@ func main() {
 	//torControlAddr := "127.0.0.1:9951"
 	//err = torControl.Dial(torControlNetwork, torControlAddr)
 
-	err = torControl.Dial("unix","/var/lib/tor-alpha-control/control")
+	err = torControl.Dial("unix", "/var/lib/tor-alpha-control/control")
 	fmt.Print("dialed!\n")
 	if err != nil {
 		fmt.Print("connect fail %s\n", err)

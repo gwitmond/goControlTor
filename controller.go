@@ -16,37 +16,36 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-
 package goControlTor
 
 import (
 	"bufio"
-	"fmt"
-	"io/ioutil"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"strings"
+	"fmt"
+	"io/ioutil"
 	"net"
 	"net/textproto"
 	"path"
+	"strings"
 )
 
 const (
-	cmdOK           = 250
-	cmdAuthenticate = "AUTHENTICATE"
+	cmdOK            = 250
+	cmdAuthenticate  = "AUTHENTICATE"
 	cmdAuthChallenge = "AUTHCHALLENGE"
-//	authMethodCookie     = "COOKIE"
-//	authMethodNull       = "NULL"
+	//	authMethodCookie     = "COOKIE"
+	//	authMethodNull       = "NULL"
 
 	respAuthChallenge = "AUTHCHALLENGE "
 
-	argServerHash = "SERVERHASH="
+	argServerHash  = "SERVERHASH="
 	argServerNonce = "SERVERNONCE="
 
 	authMethodSafeCookie = "SAFECOOKIE"
-	authNonceLength   = 32
+	authNonceLength      = 32
 
 	authServerHashKey = "Tor safe cookie authentication server-to-controller hash"
 	authClientHashKey = "Tor safe cookie authentication controller-to-server hash"
@@ -102,7 +101,6 @@ func (t *TorControl) SafeCookieAuthentication(cookiePath string) error {
 	}
 	cookieStr := hex.EncodeToString(cookie)
 	authReq := fmt.Sprintf("%s %s\n", cmdAuthenticate, cookieStr)
-
 
 	code, message, err = t.SendCommand(authReq)
 	if err != nil {
@@ -184,7 +182,7 @@ func (t *TorControl) authSafeCookie(cookie []byte) ([]byte, error) {
 
 func (t *TorControl) PasswordAuthenticate(password string) error {
 	authCmd := fmt.Sprintf("%s \"%s\"\n", cmdAuthenticate, password)
-	_,_,err := t.SendCommand(authCmd)
+	_, _, err := t.SendCommand(authCmd)
 	return err
 }
 
