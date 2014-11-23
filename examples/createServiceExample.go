@@ -32,9 +32,10 @@ func main() {
 
 	// directory must be owned by the tor user/group
 	// and have g+rx permissions
-	err = torControl.SafeCookieAuthentication("/var/lib/tor-alpha-control/control_auth_cookie")
+	//err = torControl.SafeCookieAuthenticate("/var/lib/tor-alpha-control/control_auth_cookie")
+	err = torControl.CookieAuthenticate("/var/lib/tor-alpha-control/control_auth_cookie")
 	if err != nil {
-		fmt.Print("Tor control port safe cookie authentication fail\n")
+		fmt.Print("Tor control port cookie authentication fail\n")
 		return
 	}
 	fmt.Print("Tor control port password authentication successful.\n")

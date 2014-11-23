@@ -85,7 +85,7 @@ func (t *TorControl) SendCommand(command string) (int, string, error) {
 	return code, message, nil
 }
 
-func (t *TorControl) SafeCookieAuthentication(cookiePath string) error {
+func (t *TorControl) SafeCookieAuthenticate(cookiePath string) error {
 
 	var code int
 	var message string
@@ -105,6 +105,27 @@ func (t *TorControl) SafeCookieAuthentication(cookiePath string) error {
 	code, message, err = t.SendCommand(authReq)
 	if err != nil {
 		return fmt.Errorf("Safe Cookie Authentication fail: %s %s %s", code, message, err)
+	}
+
+	return nil
+}
+
+func (t *TorControl) CookieAuthenticate(cookiePath string) error {
+
+	var code int
+	var message string
+
+	cookie, err := readAuthCookie(cookiePath)
+	if err != nil {
+		return err
+	}
+
+	cookieStr := hex.EncodeToString(cookie)
+	authReq := fmt.Sprintf("%s %s\n", cmdAuthenticate, cookieStr)
+
+	code, message, err = t.SendCommand(authReq)
+	if err != nil {
+		return fmt.Errorf("Cookie Authentication fail: %s %s %s", code, message, err)
 	}
 
 	return nil
