@@ -1,6 +1,7 @@
 /*
  * controller.go - goControlTor
  * Copyright (C) 2014  Yawning Angel, David Stainton
+ * Copyright (C) 2015  Guido Witmond (Epemeral additions)
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -24,11 +25,13 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"net"
 	"net/textproto"
 	"path"
+	"regexp"
 	"strings"
 )
 
@@ -69,7 +72,7 @@ func (t *TorControl) Dial(network, addr string) error {
 	return nil
 }
 
-func (t *TorControl) SendCommand(command string) (int, string, error) {
+func (t *TorControl) SendCommand(command string, expect int) (int, string, error) {
 	var code int
 	var message string
 	var err error
@@ -78,10 +81,7 @@ func (t *TorControl) SendCommand(command string) (int, string, error) {
 	if err != nil {
 		return 0, "", fmt.Errorf("writing to tor control port: %s", err)
 	}
-	code, message, err = t.textprotoReader.ReadCodeLine(cmdOK)
-	if err != nil {
-		return code, message, fmt.Errorf("reading tor control port command status: %s", err)
-	}
+	code, message, err = t.textprotoReader.ReadResponse(expect)
 	return code, message, nil
 }
 
@@ -102,7 +102,7 @@ func (t *TorControl) SafeCookieAuthenticate(cookiePath string) error {
 	cookieStr := hex.EncodeToString(cookie)
 	authReq := fmt.Sprintf("%s %s\n", cmdAuthenticate, cookieStr)
 
-	code, message, err = t.SendCommand(authReq)
+	code, message, err = t.SendCommand(authReq, cmdOK)
 	if err != nil {
 		return fmt.Errorf("Safe Cookie Authentication fail: %s %s %s", code, message, err)
 	}
@@ -111,7 +111,6 @@ func (t *TorControl) SafeCookieAuthenticate(cookiePath string) error {
 }
 
 func (t *TorControl) CookieAuthenticate(cookiePath string) error {
-
 	var code int
 	var message string
 
@@ -123,7 +122,7 @@ func (t *TorControl) CookieAuthenticate(cookiePath string) error {
 	cookieStr := hex.EncodeToString(cookie)
 	authReq := fmt.Sprintf("%s %s\n", cmdAuthenticate, cookieStr)
 
-	code, message, err = t.SendCommand(authReq)
+	code, message, err = t.SendCommand(authReq, cmdOK)
 	if err != nil {
 		return fmt.Errorf("Cookie Authentication fail: %s %s %s", code, message, err)
 	}
@@ -203,7 +202,7 @@ func (t *TorControl) authSafeCookie(cookie []byte) ([]byte, error) {
 
 func (t *TorControl) PasswordAuthenticate(password string) error {
 	authCmd := fmt.Sprintf("%s \"%s\"\n", cmdAuthenticate, password)
-	_, _, err := t.SendCommand(authCmd)
+	_, _, err := t.SendCommand(authCmd, cmdOK)
 	return err
 }
 
@@ -217,13 +216,13 @@ func (t *TorControl) CreateHiddenService(serviceDir string, listenAddrs map[int]
 		createCmd += fmt.Sprintf(" hiddenserviceport=\"%d %s\"", virtPort, listenAddr)
 	}
 	createCmd += " HiddenServiceDirGroupReadable=1\n"
-	_, _, err := t.SendCommand(createCmd)
+	_, _, err := t.SendCommand(createCmd, cmdOK)
 	return err
 }
 
 func (t *TorControl) DeleteHiddenService(serviceDir string) error {
 	var deleteCmd string = fmt.Sprintf("SETCONF hiddenservicedir=%s\n", serviceDir)
-	_, _, err := t.SendCommand(deleteCmd)
+	_, _, err := t.SendCommand(deleteCmd, cmdOK)
 	return err
 }
 
@@ -233,4 +232,70 @@ func ReadOnion(serviceDir string) (string, error) {
 		return "", fmt.Errorf("reading Tor hidden service hostname file: %s", err)
 	}
 	return string(onion), nil
+}
+
+
+// Create ephemeral hidden services.
+// These run from creation until the Tor service shuts down.
+// Starting a ephemeral service returns the onion address and its private key
+// To restart a service at a later date, remember the private key and submit it to Tor.
+
+var onionRE = regexp.MustCompile("ServiceID=([a-z2-7=]+)")
+var keyRE   = regexp.MustCompile("PrivateKey=RSA1024:([a-zA-Z0-9+/-_=]+)")
+
+// CreateEphemeralHiddenService creates a new hidden service.
+func (t *TorControl) CreateEphemeralHiddenService (port, dest string) (string, string, error) {
+
+	// ADD_ONION SP NEW:BEST SP FLAGS=Detach Port=443,127.0.0.1:12345
+	// Returns: 250-ServiceID=<onionaddr>CRLF
+	//          250-PrivateKey=<keytype>:<KeyBlob>CRLF
+	//          250 OK CRLF
+
+	cmd := fmt.Sprintf("ADD_ONION NEW:BEST FLAGS=Detach Port=%s,%s\n", port, dest)
+	_, message, err := t.SendCommand(cmd, cmdOK)
+	if err != nil {
+		return "", "", err
+	}
+
+	onionAddress := getFirst(onionRE.FindStringSubmatch(message))
+	onionPrivKey := getFirst(keyRE.FindStringSubmatch(message))
+	return onionAddress, onionPrivKey, nil
+}
+
+// Return the first (not zeroth) string in the array, if not nil
+func getFirst(s []string) (string) {
+	if s != nil {
+		return s[1]
+	}
+	return ""
+}
+
+
+// RestartEphemeralHiddenService restarts a new hidden service at the tor node
+// TODO: check if it already runs at the service (or if it is idempotent)
+func (t *TorControl) RestartEphemeralHiddenService (privkey []byte, port, dest string) (string, error) {
+
+	// TODO: check with these calls to see which onions are still/already up
+	// GETINFO onions/current
+	// GETINFO onions/detached
+
+	// ADD_ONION SP RSA1024:<keyblob> SP FLAGS=Detach Port=443,127.0.0.1:12345
+	// Returns: 250-ServiceID=<onionaddr>CRLF
+	//          250-PrivateKey=<keytype>:<KeyBlob>CRLF
+	//          250 OK CRLF
+	// Or
+	//          550 Onion address collision
+
+	cmd := fmt.Sprintf("ADD_ONION RSA1024:%s FLAGS=Detach Port=%s,%s\n", string(privkey), port, dest)
+	code, message, err := t.SendCommand(cmd, 0)
+	if code == 250 || code == 550 {
+		onionAddress := getFirst(onionRE.FindStringSubmatch(message))
+		// ignore 550 Onion address collision erorrs, treat as success.
+		return onionAddress, nil
+	} else if err != nil {
+		return "", err
+	} else {
+		// we have a different return code, report it
+		return "", errors.New(fmt.Sprintf("%d %s", code, message))
+	}
 }
