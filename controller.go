@@ -1,7 +1,7 @@
 /*
  * controller.go - goControlTor
  * Copyright (C) 2014  Yawning Angel, David Stainton
- * Copyright (C) 2015  Guido Witmond (Epemeral additions)
+ * Copyright (C) 2015  Guido Witmond (Ephemeral additions)
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -28,8 +28,9 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net"
-	"net/textproto"
+	"github.com/gwitmond/textproto"
 	"path"
 	"regexp"
 	"strings"
@@ -77,12 +78,14 @@ func (t *TorControl) SendCommand(command string, expect int) (int, string, error
 	var message string
 	var err error
 
+	log.Printf("ControlTor: %#v; expect: %#v", command, expect)
 	_, err = t.controlConn.Write([]byte(command))
 	if err != nil {
 		return 0, "", fmt.Errorf("writing to tor control port: %s", err)
 	}
 	code, message, err = t.textprotoReader.ReadResponse(expect)
-	return code, message, nil
+	log.Printf("ControlTor got code: %v; message %v; err: %v", code, message, err)
+	return code, message, err
 }
 
 func (t *TorControl) SafeCookieAuthenticate(cookiePath string) error {
@@ -238,8 +241,8 @@ func ReadOnion(serviceDir string) (string, error) {
 // Create ephemeral hidden services.
 // These run from creation until the Tor service shuts down.
 // Starting a ephemeral service returns the onion address and its private key
-// To restart a service at a later date, remember the private key and submit it to Tor.
-
+// To restart a service at a later date, remember the onion address and private key and submit it to Tor.
+// We create Detached services so we can close the control port immedeately.
 var onionRE = regexp.MustCompile("ServiceID=([a-z2-7=]+)")
 var keyRE   = regexp.MustCompile("PrivateKey=RSA1024:([a-zA-Z0-9+/-_=]+)")
 
@@ -272,12 +275,20 @@ func getFirst(s []string) (string) {
 
 
 // RestartEphemeralHiddenService restarts a new hidden service at the tor node
-// TODO: check if it already runs at the service (or if it is idempotent)
-func (t *TorControl) RestartEphemeralHiddenService (privkey []byte, port, dest string) (string, error) {
+// It checks if it already runs at the service by looking up the onion address.
+// If so we return success.
+// If it doesn't run yet, start it using the private key
+func (t *TorControl) RestartEphemeralHiddenService (privkey []byte, onionaddress, port, dest string) (error) {
 
-	// TODO: check with these calls to see which onions are still/already up
-	// GETINFO onions/current
+	// Check with these calls to see if our onion is already up.
 	// GETINFO onions/detached
+	// Returns: 250+onions/detached=
+	//          <onionaddress>
+	//          <onionaddress>
+	//          .
+        //          250 OK
+	// Or
+	//          551 No onion services of the specified type.
 
 	// ADD_ONION SP RSA1024:<keyblob> SP FLAGS=Detach Port=443,127.0.0.1:12345
 	// Returns: 250-ServiceID=<onionaddr>CRLF
@@ -286,16 +297,43 @@ func (t *TorControl) RestartEphemeralHiddenService (privkey []byte, port, dest s
 	// Or
 	//          550 Onion address collision
 
+	cmd := fmt.Sprintf("GETINFO onions/detached\n")
+	code, message, err := t.SendCommand(cmd, 0)
+	log.Printf("got message: %v, err %v", message, err)
+	if code == 551 {
+		// no detached onions yet, so start the first one
+		return t.RestartEphemeralHiddenServiceOnPrivkey(privkey, port, dest)
+	}
+	if code == 250 {
+		log.Printf("checking for onionaddress: %v", onionaddress[:16])
+		// check for onion address without the .onion:<port> part.
+		if strings.Contains(message, onionaddress[:16]) {
+			// It's already there, return ok
+			return nil
+		}
+		// It's not, start afresh.
+		return t.RestartEphemeralHiddenServiceOnPrivkey(privkey, port, dest)
+	} else if err != nil {
+		return err
+	} else {
+		return errors.New(fmt.Sprintf("Unexpected return code: %d; message: %v", code, message))
+	}
+}
+
+
+func (t *TorControl) RestartEphemeralHiddenServiceOnPrivkey(privkey []byte, port, dest string) (error) {
+	// Restart a hidden service based on the privkey provided.
 	cmd := fmt.Sprintf("ADD_ONION RSA1024:%s FLAGS=Detach Port=%s,%s\n", string(privkey), port, dest)
 	code, message, err := t.SendCommand(cmd, 0)
-	if code == 250 || code == 550 {
-		onionAddress := getFirst(onionRE.FindStringSubmatch(message))
-		// ignore 550 Onion address collision erorrs, treat as success.
-		return onionAddress, nil
+	log.Printf("restarted gave code: %v, message: %v, err: %v", code, message, err)
+	if code == 250 {
+		return nil
+	} else if code == 550 {
+		return err
 	} else if err != nil {
-		return "", err
+		return err
 	} else {
 		// we have a different return code, report it
-		return "", errors.New(fmt.Sprintf("%d %s", code, message))
+		return errors.New(fmt.Sprintf("Unexpected return code: %d; message %v", code, message))
 	}
 }
